@@ -380,7 +380,7 @@ class NeuronCriteria:
         self.hemilineage = hemilineage
 
         self.list_props = ['bodyId', 'status', 'statusLabel', 'cellBodyFiber',
-                           'hemilineage', 'exitNerve', 'class_']
+                           'hemilineage', 'exitNerve', 'class_', 'type']
         self.list_props_regex = ['type', 'instance']
 
     def __eq__(self, value):
