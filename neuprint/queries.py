@@ -131,7 +131,7 @@ def _all_rois_from_meta(meta):
     # These two ROIs are special:
     # For historical reasons, they exist as tags,
     # but are not listed in the Meta roiInfo.
-    hidden_rois = {'FB-column3', 'AL-DC3'}
+    hidden_rois = {'FB-column3', 'AL-DC3', 'AL-DC3(R)'}
 
     return sorted(official_rois | hidden_rois)
 
