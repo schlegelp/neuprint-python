@@ -1783,7 +1783,8 @@ def fetch_connection_mitochondria(source_criteria, target_criteria, synapse_crit
 
 @inject_client
 @neuroncriteria_args('neuron_criteria')
-def fetch_synapses(neuron_criteria, synapse_criteria=None, batch_size=10, *, client=None):
+def fetch_synapses(neuron_criteria, synapse_criteria=None, distinct=True,
+                   batch_size=10, *, client=None):
     """
     Fetch synapses from a neuron or selection of neurons.
 
@@ -1806,6 +1807,12 @@ def fetch_synapses(neuron_criteria, synapse_criteria=None, batch_size=10, *, cli
             Otherwise, all ROI names will be included in the results.
             In that case, some synapses will be listed multiple times -- once per intersecting ROI.
             If a synapse does not intersect any ROI, it will be listed with an roi of ``None``.
+
+        distinct:
+            If True (default), each presynapse will show up only once. If False,
+            each presynapse will show up as many times as it has connections to
+            a postsynapses. In effect, this will return you the count of
+            outgoing connections for a neuron.
 
         batch_size:
             To improve performance and avoid timeouts, the synapses for multiple bodies
@@ -1881,7 +1888,7 @@ def fetch_synapses(neuron_criteria, synapse_criteria=None, batch_size=10, *, cli
     for batch_bodies in tqdm(iter_batches(bodies, batch_size)):
         batch_criteria = copy.copy(neuron_criteria)
         batch_criteria.bodyId = batch_bodies
-        batch_df = _fetch_synapses(batch_criteria, synapse_criteria, client)
+        batch_df = _fetch_synapses(batch_criteria, synapse_criteria, distinct, client)
         batch_dfs.append( batch_df )
 
     if batch_dfs:
@@ -1899,7 +1906,7 @@ def fetch_synapses(neuron_criteria, synapse_criteria=None, batch_size=10, *, cli
     return pd.DataFrame([], columns=dtypes.keys()).astype(dtypes)
 
 
-def _fetch_synapses(neuron_criteria, synapse_criteria, client):
+def _fetch_synapses(neuron_criteria, synapse_criteria, distinct, client):
     neuron_criteria.matchvar = 'n'
 
     if synapse_criteria is None:
@@ -1917,26 +1924,46 @@ def _fetch_synapses(neuron_criteria, synapse_criteria, client):
         neuron_criteria.roi_req = 'any'
 
     # Fetch results
-    cypher = dedent(f"""\
-        {neuron_criteria.global_with(prefix=8)}
-        MATCH (n:{neuron_criteria.label})
-        {neuron_criteria.all_conditions('n', prefix=8)}
+    if distinct:
+        cypher = dedent(f"""\
+            {neuron_criteria.global_with(prefix=8)}
+            MATCH (n:{neuron_criteria.label})
+            {neuron_criteria.all_conditions('n', prefix=8)}
 
-        MATCH (n)-[:Contains]->(ss:SynapseSet),
-              (ss)-[:Contains]->(s:Synapse)
+            MATCH (n)-[:Contains]->(ss:SynapseSet),
+                  (ss)-[:Contains]->(s:Synapse)
 
-        {synapse_criteria.condition('n', 's', prefix=8)}
-        // De-duplicate 's' because 'pre' synapses can appear in more than one SynapseSet
-        WITH DISTINCT n, s
+            {synapse_criteria.condition('n', 's', prefix=8)}
+            // De-duplicate 's' because 'pre' synapses can appear in more than one SynapseSet
+            WITH DISTINCT n, s
 
-        RETURN n.bodyId as bodyId,
-               s.type as type,
-               s.confidence as confidence,
-               s.location.x as x,
-               s.location.y as y,
-               s.location.z as z,
-               apoc.map.removeKeys(s, ['location', 'confidence', 'type']) as syn_info
-    """)
+            RETURN n.bodyId as bodyId,
+                   s.type as type,
+                   s.confidence as confidence,
+                   s.location.x as x,
+                   s.location.y as y,
+                   s.location.z as z,
+                   apoc.map.removeKeys(s, ['location', 'confidence', 'type']) as syn_info
+        """)
+    else:
+        cypher = dedent(f"""\
+            {neuron_criteria.global_with(prefix=8)}
+            MATCH (n:{neuron_criteria.label})
+            {neuron_criteria.all_conditions('n', prefix=8)}
+
+            MATCH (n)-[:Contains]->(ss:SynapseSet),
+                  (ss)-[:Contains]->(s:Synapse)
+
+            {synapse_criteria.condition('n', 's', prefix=8)}
+
+            RETURN n.bodyId as bodyId,
+                   s.type as type,
+                   s.confidence as confidence,
+                   s.location.x as x,
+                   s.location.y as y,
+                   s.location.z as z,
+                   apoc.map.removeKeys(s, ['location', 'confidence', 'type']) as syn_info
+        """)
     data = client.fetch_custom(cypher, format='json')['data']
 
     # Assemble DataFrame
