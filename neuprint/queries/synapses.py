@@ -49,8 +49,12 @@ def fetch_synapses(neuron_criteria, synapse_criteria=None, batch_size=10, *, cli
     Returns:
 
         DataFrame in which each row represent a single synapse.
-        Unless ``primary_only`` was specified, some synapses may be listed more than once,
+        Unless ``primary_only`` (default) was specified, some synapses may be listed more than once,
         if they reside in more than one overlapping ROI.
+        If the dataset contains neurotransmitter (NT) predictions, the DataFrame will also
+        contain additional columns with NT prediction probabilities. Note that NT
+        predictions only exist for presynapses, i.e. the NT probability for postsynapses will
+        be ``NaN``.
 
     Example:
 
@@ -171,29 +175,57 @@ def _fetch_synapses(neuron_criteria, synapse_criteria, client):
     """)
     data = client.fetch_custom(cypher, format='json')['data']
 
+    # Check if we have NT predictions in this dataset
+    if nt_predictions:
+        nt_cols = _get_nt_prediction_cols(client)
+    else:
+        nt_cols = tuple()
+
     # Assemble DataFrame
     syn_table = []
     for body, syn_type, conf, x, y, z, syn_info in data:
         # Exclude non-primary ROIs if necessary
         syn_rois = return_rois & {*syn_info.keys()}
-        # Fixme: Filter for the user's ROIs (drop duplicates)
-        for roi in syn_rois:
-            syn_table.append((body, syn_type, roi, x, y, z, conf))
 
         if not syn_rois:
-            syn_table.append((body, syn_type, None, x, y, z, conf))
+            syn_rois = {None}
 
-    syn_df = pd.DataFrame(syn_table, columns=['bodyId', 'type', 'roi', 'x', 'y', 'z', 'confidence'])
+        # Fixme: Filter for the user's ROIs (drop duplicates)
+        for roi in syn_rois:
+            syn_table.append([body, syn_type, roi, x, y, z, conf])
+            if nt_cols:
+                syn_table[-1].extend([syn_info.get(nt_col, None) for nt_col in nt_cols])
+
+    syn_df = pd.DataFrame(
+        syn_table,
+        columns=["bodyId", "type", "roi", "x", "y", "z", "confidence"] + list(nt_cols),
+    )
 
     # Save RAM with smaller dtypes and interned strings
-    syn_df['type'] = pd.Categorical(syn_df['type'], ['pre', 'post'])
-    syn_df['roi'] = syn_df['roi'].apply(lambda s: sys.intern(s) if s else s)
-    syn_df['x'] = syn_df['x'].astype(np.int32)
-    syn_df['y'] = syn_df['y'].astype(np.int32)
-    syn_df['z'] = syn_df['z'].astype(np.int32)
-    syn_df['confidence'] = syn_df['confidence'].astype(np.float32)
+    syn_df["type"] = pd.Categorical(syn_df["type"], ["pre", "post"])
+    syn_df["roi"] = syn_df["roi"].apply(lambda s: sys.intern(s) if s else s)
+    syn_df["x"] = syn_df["x"].astype(np.int32)
+    syn_df["y"] = syn_df["y"].astype(np.int32)
+    syn_df["z"] = syn_df["z"].astype(np.int32)
+    syn_df["confidence"] = syn_df["confidence"].astype(np.float32)
+    for col in nt_cols:
+        syn_df[col] = syn_df[col].astype(np.float32) if col in syn_df else np.nan
 
     return syn_df
+
+
+def _get_nt_prediction_cols(client):
+    """Check if NT predictions exist and return the relevant columns."""
+    # Cypher to return all available fields for Synapse nodes
+    cypher = """
+        MATCH (s:Synapse)
+        WHERE s.type = "pre"
+        RETURN keys(s) AS synapse_fields
+        LIMIT 1
+    """
+    all_fields = client.fetch_custom(cypher, format="json")["data"][0][0]
+    # Sort to make sure the order is consistent
+    return sorted(f for f in all_fields if f.startswith("nt") and f.endswith("Prob"))
 
 
 @inject_client
